@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 
 # Обновим инструменты сборки и установим зависимости, нужные для запуска pytest и генерации тестов
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install "langchain>=0.2.16" "langchain-openai>=0.2.0" "pytest>=8.2.0"
+    && pip install "pytest>=8.2.0"
 
 WORKDIR /workspace
 
