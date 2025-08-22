@@ -1,14 +1,14 @@
 # AI агент для автогенерации тестов и запуска их в Docker
 
 Этот агент:
-- генерирует pytest-тесты для указанного Python-файла при помощи LangChain (langchain-openai + OpenAI);
+- генерирует pytest-тесты для указанного Python-файла при помощи LangChain (langchain-openai через OpenRouter);
 - запускает сгенерированные тесты в локальном Docker-контейнере;
 - собирает и выводит результат прогона тестов.
 
 Требования:
 - Python 3.13+
 - Docker установлен и доступен
-- Переменная окружения `OPENAI_API_KEY` (для доступа к OpenAI API)
+- Переменная окружения `OPENROUTER_API_KEY` (для доступа к OpenRouter API; допускается запасной `OPENAI_API_KEY`)
 
 ## Установка зависимостей
 
@@ -33,7 +33,12 @@ python -m pip install .
 1) Установите переменную окружения с ключом:
 
 ```
-export OPENAI_API_KEY="sk-..."
+export OPENROUTER_API_KEY="sk-or-v1-..."
+# (необязательно) реферер и название приложения для OpenRouter
+export OPENROUTER_SITE_URL="https://your-site.example"
+export OPENROUTER_APP_NAME="AI Test Agent"
+# (запасной вариант) если нужен fallback
+# export OPENAI_API_KEY="sk-..."
 ```
 
 2) Запустите агента, указав путь к файлу, для которого нужно сгенерировать тесты:
@@ -50,16 +55,23 @@ python agent.py --file path/to/your_module.py
 
 ### Полезные флаги
 - `--out` — куда сохранить тесты (по умолчанию: `tests/test_<имя файла>.py`).
-- `--model` — модель OpenAI (по умолчанию: `gpt-4o-mini`).
+- `--model` — модель через OpenRouter (по умолчанию: `openai/gpt-4o-mini`).
 - `--temperature` — температура генерации (по умолчанию 0.0).
 - `--skip-run` — только сгенерировать тесты, не запускать их.
 - `--rebuild-image` — пересобрать Docker-образ без кэша.
 - `--timeout` — таймаут (сек) для прогона тестов в контейнере.
 
 ## Как это работает
-- Агент читает указанный файл, формирует prompt и вызывает ChatOpenAI через LangChain.
+- Агент читает указанный файл, формирует prompt и вызывает ChatOpenAI через LangChain (через OpenRouter API).
 - На выходе получает тело pytest-тестов, которое очищается от недопустимых импортов и дополняется фикстурой `target`.
 - Для запуска тестов используется Docker: текущая папка монтируется в `/workspace`, запуск происходит командой `pytest`.
+
+## OpenRouter
+
+- Ключ API: `OPENROUTER_API_KEY` (в проекте поддержан запасной `OPENAI_API_KEY`).
+- Базовый URL: `https://openrouter.ai/api/v1`.
+- Рекомендуемые заголовки: `HTTP-Referer` и `X-Title` — настраиваются через переменные `OPENROUTER_SITE_URL` и `OPENROUTER_APP_NAME`.
+- Документация: https://openrouter.ai/docs/community/lang-chain
 
 ## Пример
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-AI агент: генерирует pytest-тесты для указанного Python-файла с помощью LangChain + OpenAI
+AI агент: генерирует pytest-тесты для указанного Python-файла с помощью LangChain + OpenRouter
 и запускает их в локальном Docker-контейнере, затем выводит результат прогона.
 
 Требования окружения для запуска агента (на хосте):
 - Python 3.13+
 - Установленные зависимости (см. pyproject.toml)
-- Переменная окружения OPENAI_API_KEY
+- Переменная окружения OPENROUTER_API_KEY (или OPENAI_API_KEY в качестве запасного варианта)
 - Docker установлен и доступен
 
 Пример запуска см. в README.md
@@ -97,8 +97,30 @@ def read_file(path: Path, max_chars: int = 60_000) -> str:
 
 
 def init_llm(model: str, temperature: float) -> ChatOpenAI:
-    # OPENAI_API_KEY должен быть установлен в окружении
-    return ChatOpenAI(model=model, temperature=temperature)
+    # Инициализация LLM через OpenRouter (см. https://openrouter.ai/docs/community/lang-chain)
+    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    base_url = "https://openrouter.ai/api/v1"
+
+    # Рекомендуемые дополнительные заголовки
+    default_headers = {}
+    site = os.environ.get("OPENROUTER_SITE_URL")
+    app = os.environ.get("OPENROUTER_APP_NAME")
+    if site:
+        default_headers["HTTP-Referer"] = site
+    if app:
+        default_headers["X-Title"] = app
+
+    kwargs = {
+        "model": model,
+        "temperature": temperature,
+        "base_url": base_url,
+    }
+    if api_key:
+        kwargs["api_key"] = api_key
+    if default_headers:
+        kwargs["default_headers"] = default_headers
+
+    return ChatOpenAI(**kwargs)
 
 
 def build_chain(model: str, temperature: float):
@@ -201,7 +223,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="ИИ агент: генерирует тесты и запускает их в Docker")
     parser.add_argument("--file", "-f", required=True, help="Путь к целевому .py файлу")
     parser.add_argument("--out", "-o", help="Куда записать сгенерированные тесты (по умолчанию tests/test_<name>.py)")
-    parser.add_argument("--model", default="gpt-4o-mini", help="Модель OpenAI для генерации тестов (langchain-openai)")
+    parser.add_argument("--model", default="openai/gpt-4o-mini", help="Модель через OpenRouter для генерации тестов (langchain-openai)")
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--skip-run", action="store_true", help="Только сгенерировать тесты, не запускать их")
     parser.add_argument("--rebuild-image", action="store_true", help="Пересобрать Docker-образ без кэша")
@@ -225,9 +247,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         timeout=args.timeout,
     )
 
-    # Проверим ключ
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("[WARN] Переменная окружения OPENAI_API_KEY не установлена. Генерация тестов может не сработать.", file=sys.stderr)
+    # Проверим ключи для OpenRouter
+    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+        print("[WARN] Переменная окружения OPENROUTER_API_KEY не установлена (и отсутствует запасной OPENAI_API_KEY). Генерация тестов может не сработать.", file=sys.stderr)
 
     print(f"[INFO] Генерация тестов для: {config.target_file}")
     try:
