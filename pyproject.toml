@@ -1,6 +1,10 @@
 [project]
 name = "elite-engineers-advent-of-ai-2025-01"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI agent that generates tests for a specified Python file using LangChain and runs them in a local Docker container."
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+  "langchain>=0.2.16",
+  "langchain-openai>=0.2.0",
+  "pytest>=8.2.0"
+]
