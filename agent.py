@@ -30,6 +30,7 @@ from langchain_core.prompts import ChatPromptTemplate
 HEADER_FIXTURE = """
 # Авто-добавленный хедер для корректного импорта целевого модуля по файловому пути.
 import importlib.util
+import inspect
 import sys as _sys
 from pathlib import Path as _Path
 import os as _os
