@@ -432,6 +432,35 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if code == 0:
         print("[SUCCESS] Все тесты прошли успешно.")
+        # Tag current commit and create GitHub release from the tag
+        try:
+            # Ensure we are in a git repository
+            subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Create or update tag 'elite-release' on current commit
+            subprocess.run(["git", "tag", "-f", "elite-release"], check=True)
+            print("[INFO] Локальный git-тег 'elite-release' установлен на текущий коммит.")
+            # Push tag to remote to avoid 'tag exists locally but has not been pushed' errors
+            try:
+                remotes_out = subprocess.run(["git", "remote"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip().splitlines()
+            except subprocess.CalledProcessError:
+                remotes_out = []
+            remote = "origin" if "origin" in remotes_out else (remotes_out[0] if remotes_out else None)
+            if remote:
+                subprocess.run(["git", "push", "--force", remote, "elite-release"], check=True)
+                print(f"[INFO] Тег 'elite-release' отправлен в удалённый репозиторий '{remote}'.")
+            else:
+                print("[WARN] Не найден ни один git-remote. Пропускаем отправку тега.", file=sys.stderr)
+            # Create GitHub release using gh CLI if it doesn't already exist
+            view = subprocess.run(["gh", "release", "view", "elite-release"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if view.returncode != 0:
+                subprocess.run(["gh", "release", "create", "elite-release", "--title", "elite-release", "--notes", "Automated release"], check=True)
+                print("[INFO] Создан GitHub release из тега 'elite-release'.")
+            else:
+                print("[INFO] GitHub release 'elite-release' уже существует, пропускаем создание.")
+        except FileNotFoundError as e:
+            print(f"[WARN] Не найдено требуемое CLI: {e}. Пропускаем создание тега/релиза.", file=sys.stderr)
+        except subprocess.CalledProcessError as e:
+            print(f"[WARN] Не удалось создать тег/релиз: {e}.", file=sys.stderr)
     else:
         print(f"[FAIL] Тесты завершились с кодом {code}.")
     return code
