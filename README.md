@@ -91,3 +91,55 @@ python agent.py -f src/utils.py
 
 ## Лицензия
 MIT (если требуется, поменяйте под вашу политику).
+
+## Поддержка MCP (MultiServerMCPClient)
+
+Агент поддерживает подключение к нескольким MCP-серверам с помощью библиотеки `langchain-mcp-adapters` (см. Context7 ID: `/langchain-ai/langchain-mcp-adapters`). Это позволяет добавлять внешние инструменты в модель, в т.ч. Git MCP сервер.
+
+Требования:
+- Установлен Node.js и `npx` (для Git MCP сервера);
+- Python зависимости установлены (пакет `langchain-mcp-adapters` добавлен в зависимости проекта).
+
+Включение MCP (минимально инвазивно — по умолчанию выключено):
+- Флаги CLI:
+  - `--enable-mcp` — включить поддержку MCP;
+  - `--mcp-git` — добавить Git MCP сервер (`@modelcontextprotocol/server-git` через `npx`);
+  - `--mcp-extra-servers '<JSON>'` — список дополнительных MCP-серверов (массив объектов с полями `name`, `command`, `args`, `transport`, `env` и т.д.);
+  - `--mcp-list-tools` — перед генерацией вывести список доступных MCP-инструментов;
+  - `--mcp-bind-tools` — привязать MCP-инструменты к модели (`bind_tools`).
+
+- Эквивалентные переменные окружения:
+  - `ENABLE_MCP=1`
+  - `MCP_GIT=1`
+  - `MCP_EXTRA_SERVERS='[...]'`
+  - `MCP_LIST_TOOLS=1`
+  - `MCP_BIND_TOOLS=1`
+
+Git MCP сервер:
+- Источник: https://github.com/modelcontextprotocol/servers/tree/main/src/git
+- Запуск происходит автоматически через `npx @modelcontextprotocol/server-git` с транспортом `stdio`.
+- Необязательная переменная окружения `MCP_GIT_REPO` может указать путь к репозиторию, с которым работать (по умолчанию сервер может попытаться использовать текущий контекст, зависит от реализации сервера).
+
+Примеры:
+
+1) Список инструментов без привязки к модели:
+```
+python agent.py -f path/to/your.py --enable-mcp --mcp-git --mcp-list-tools --skip-run
+```
+
+2) Привязать инструменты к модели при генерации:
+```
+export MCP_GIT_REPO=/path/to/repo
+python agent.py -f path/to/your.py --enable-mcp --mcp-git --mcp-bind-tools
+```
+
+3) Добавить дополнительные сервера (JSON):
+```
+python agent.py -f path/to/your.py --enable-mcp \
+  --mcp-extra-servers '[{"name":"math","command":"python","args":["math_server.py"],"transport":"stdio"}]'
+```
+
+Замечания:
+- MCP интеграция опциональна: если флаги и переменные окружения не заданы, поведение агента остаётся прежним.
+- При отсутствии пакета `langchain-mcp-adapters` агент продолжит работу без MCP (выведет предупреждение при попытке включить MCP).
+- Для Git MCP требуется установленный Node.js и доступный `npx`.

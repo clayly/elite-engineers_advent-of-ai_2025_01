@@ -18,13 +18,33 @@ import os
 import re
 import subprocess
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any, Dict
 
 # LangChain imports
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+
+# Optional MCP imports
+MultiServerMCPClient = None  # type: ignore
+try:
+    # Preferred import path
+    from langchain_mcp_adapters import MultiServerMCPClient as _MSC
+    MultiServerMCPClient = _MSC  # type: ignore
+except Exception:
+    try:
+        # Possible alternate namespace
+        from langchain_mcp_adapters.client import MultiServerMCPClient as _MSC  # type: ignore
+        MultiServerMCPClient = _MSC  # type: ignore
+    except Exception:
+        try:
+            # Fallback older style path (if any future/alt packaging)
+            from langchain_mcp.adapters import MultiServerMCPClient as _MSC  # type: ignore
+            MultiServerMCPClient = _MSC  # type: ignore
+        except Exception:
+            MultiServerMCPClient = None  # type: ignore
 
 
 HEADER_FIXTURE = """
@@ -124,13 +144,84 @@ def init_llm(model: str, temperature: float) -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
-def build_chain(model: str, temperature: float):
+def build_chain(model: str, temperature: float, tools: Optional[list[Any]] = None):
     llm = init_llm(model, temperature)
+    if tools:
+        try:
+            llm = llm.bind_tools(tools)
+        except Exception as e:
+            print(f"[WARN] Failed to bind MCP tools to LLM: {e}", file=sys.stderr)
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         ("user", USER_PROMPT_TEMPLATE),
     ])
     return prompt | llm
+
+
+# ============ MCP Integration (optional) ============
+
+def _build_mcp_servers_config(enable_git: bool = False, extra_servers_json: Optional[str] = None) -> list[dict[str, Any]]:
+    servers: list[dict[str, Any]] = []
+    # Git MCP server via npx @modelcontextprotocol/server-git
+    if enable_git:
+        git_repo = os.environ.get("MCP_GIT_REPO")  # optional path to repo
+        server: dict[str, Any] = {
+            "name": "git",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-git"],
+            "transport": "stdio",
+        }
+        env: dict[str, str] = {}
+        if git_repo:
+            env["MCP_GIT_REPO"] = git_repo
+        if env:
+            server["env"] = env
+        servers.append(server)
+    # Extra servers from JSON (list of server dicts)
+    if extra_servers_json:
+        try:
+            extra = json.loads(extra_servers_json)
+            if isinstance(extra, list):
+                servers.extend([s for s in extra if isinstance(s, dict)])
+        except Exception:
+            pass
+    return servers
+
+
+def _init_mcp_client(enable: bool, enable_git: bool, extra_servers_json: Optional[str]):
+    if not enable:
+        return None
+    if MultiServerMCPClient is None:
+        print("[WARN] MCP support requested but langchain-mcp-adapters is not installed.", file=sys.stderr)
+        return None
+    servers = _build_mcp_servers_config(enable_git=enable_git, extra_servers_json=extra_servers_json)
+    if not servers:
+        print("[WARN] MCP enabled but no servers configured.", file=sys.stderr)
+        return None
+    try:
+        client = MultiServerMCPClient(servers=servers)
+    except Exception as e:
+        print(f"[WARN] Failed to initialize MCP client: {e}", file=sys.stderr)
+        return None
+    return client
+
+
+def _list_mcp_tools(client) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    if not client:
+        return tools
+    try:
+        # Many clients expose get_tools(); fall back if unavailable
+        get_tools = getattr(client, "get_tools", None)
+        if callable(get_tools):
+            return get_tools()
+        # Try attribute
+        t = getattr(client, "tools", None)
+        if isinstance(t, list):
+            return t
+    except Exception as e:
+        print(f"[WARN] Could not retrieve MCP tools: {e}", file=sys.stderr)
+    return tools
 
 
 def extract_code_blocks(s: str) -> str:
@@ -173,9 +264,9 @@ def default_tests_path(target_file: Path) -> Path:
     return tests_dir / f"test_{stem}.py"
 
 
-def generate_tests(config: AgentConfig) -> Path:
+def generate_tests(config: AgentConfig, tools: Optional[list[Any]] = None) -> Path:
     code = read_file(config.target_file)
-    chain = build_chain(config.model, config.temperature)
+    chain = build_chain(config.model, config.temperature, tools=tools)
     resp = chain.invoke({
         "target_path": str(config.target_file),
         "code": code,
@@ -229,6 +320,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--skip-run", action="store_true", help="Только сгенерировать тесты, не запускать их")
     parser.add_argument("--rebuild-image", action="store_true", help="Пересобрать Docker-образ без кэша")
     parser.add_argument("--timeout", type=int, default=900, help="Таймаут (сек) для запуска pytest в контейнере")
+    # MCP flags (optional)
+    parser.add_argument("--enable-mcp", action="store_true", help="Включить поддержку MCP клиентов (multiple servers)")
+    parser.add_argument("--mcp-git", action="store_true", help="Добавить Git MCP сервер (@modelcontextprotocol/server-git)")
+    parser.add_argument("--mcp-extra-servers", help="JSON-список дополнительных MCP серверов (как объекты конфигурации)")
+    parser.add_argument("--mcp-list-tools", action="store_true", help="Перед генерацией вывести список MCP инструментов")
+    parser.add_argument("--mcp-bind-tools", action="store_true", help="Привязать MCP инструменты к модели (bind_tools)")
 
     args = parser.parse_args(argv)
 
@@ -252,12 +349,55 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")):
         print("[WARN] Переменная окружения OPENROUTER_API_KEY не установлена (и отсутствует запасной OPENAI_API_KEY). Генерация тестов может не сработать.", file=sys.stderr)
 
+    # MCP initialization (optional)
+    enable_mcp = bool(args.enable_mcp or str(os.environ.get("ENABLE_MCP", "")).lower() in {"1", "true", "yes"})
+    enable_git = bool(args.mcp_git or str(os.environ.get("MCP_GIT", "")).lower() in {"1", "true", "yes"})
+    extra_servers_json = args.mcp_extra_servers or os.environ.get("MCP_EXTRA_SERVERS")
+    bind_tools = bool(args.mcp_bind_tools or str(os.environ.get("MCP_BIND_TOOLS", "")).lower() in {"1", "true", "yes"})
+    list_tools_flag = bool(args.mcp_list_tools or str(os.environ.get("MCP_LIST_TOOLS", "")).lower() in {"1", "true", "yes"})
+
+    mcp_client = _init_mcp_client(enable=enable_mcp, enable_git=enable_git, extra_servers_json=extra_servers_json)
+    mcp_tools: list[Any] = []
+    if mcp_client is not None:
+        # Try to enter context if supported
+        try:
+            ctx = getattr(mcp_client, "__enter__", None)
+            if callable(ctx):
+                mcp_client.__enter__()
+        except Exception as e:
+            print(f"[WARN] MCP client context enter failed (continuing): {e}", file=sys.stderr)
+        try:
+            mcp_tools = _list_mcp_tools(mcp_client)
+        except Exception as e:
+            print(f"[WARN] Failed to list MCP tools: {e}", file=sys.stderr)
+        if list_tools_flag and mcp_tools:
+            print("[INFO] MCP инструменты доступны:")
+            try:
+                for t in mcp_tools:
+                    # tool could be LangChain Tool or dict
+                    name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None) or "<unknown>"
+                    print(f" - {name}")
+            except Exception:
+                print(f" - {len(mcp_tools)} инструмент(ов)")
+
     print(f"[INFO] Генерация тестов для: {config.target_file}")
     try:
-        test_path = generate_tests(config)
+        test_path = generate_tests(config, tools=mcp_tools if bind_tools else None)
     except Exception as e:
         print(f"[ERROR] Ошибка генерации тестов: {e}", file=sys.stderr)
         return 3
+    finally:
+        if mcp_client is not None:
+            try:
+                # Try to exit context if supported
+                ctx_exit = getattr(mcp_client, "__exit__", None)
+                if callable(ctx_exit):
+                    ctx_exit(None, None, None)
+                close = getattr(mcp_client, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
 
     print(f"[INFO] Тесты сохранены: {test_path}")
 
