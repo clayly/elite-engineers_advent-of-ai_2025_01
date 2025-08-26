@@ -23,28 +23,28 @@ uv sync
 ```
 python -m pip install -U pip
 # Либо установить зависимости вручную:
-python -m pip install "langchain>=0.2.16" "langchain-openai>=0.2.0" "pytest>=8.2.0"
+python -m pip install "langchain>=0.2.16" "langchain-openai>=0.2.0" "langgraph>=0.2.36" "pytest>=8.2.0"
 # Или установить зависимости проекта из pyproject:
 python -m pip install .
 ```
 
 ## Пример запуска агента
 
-1) Установите переменную окружения с ключом:
+1) Установите переменную окружения с ключом (PowerShell):
 
 ```
-export OPENROUTER_API_KEY="sk-or-v1-..."
+$env:OPENROUTER_API_KEY = "sk-or-v1-..."
 # (необязательно) реферер и название приложения для OpenRouter
-export OPENROUTER_SITE_URL="https://your-site.example"
-export OPENROUTER_APP_NAME="AI Test Agent"
+$env:OPENROUTER_SITE_URL = "https://your-site.example"
+$env:OPENROUTER_APP_NAME = "AI Test Agent"
 # (запасной вариант) если нужен fallback
-# export OPENAI_API_KEY="sk-..."
+# $env:OPENAI_API_KEY = "sk-..."
 ```
 
 2) Запустите агента, указав путь к файлу, для которого нужно сгенерировать тесты:
 
 ```
-python agent.py --file path/to/your_module.py
+python agent.py --file path\to\your_module.py
 ```
 
 Агент:
@@ -52,6 +52,42 @@ python agent.py --file path/to/your_module.py
 - соберёт Docker-образ (на основе локального Dockerfile);
 - запустит `pytest` внутри контейнера, смонтировав текущую директорию в `/workspace`;
 - выведет лог прогона и код возврата.
+
+## Chat-агент (LangGraph + streaming)
+
+В репозитории добавлен асинхронный чат-агент с потоковой передачей токенов на базе LangGraph и LangChain (через OpenRouter).
+
+Установка зависимостей:
+- Если вы используете uv: `uv sync` (pyproject уже включает зависимость `langgraph`).
+- Или через pip: `python -m pip install .`
+
+Примеры запуска:
+
+1) Интерактивный режим (REPL) с потоковым выводом ответа:
+```
+python agent_chat.py --model openai/gpt-4o-mini --temperature 0.3 --max-tokens 256 --system "You are a helpful assistant."
+```
+Далее вводите реплики в консоль. Принудительное завершение: Ctrl+C.
+
+2) Один запрос (single-turn) и выход:
+```
+python agent_chat.py --model openai/gpt-4o-mini --temperature 0.2 --max-tokens 200 --message "Привет! Что ты умеешь?"
+```
+
+Ключевые параметры:
+- `--model` — идентификатор модели в OpenRouter (по умолчанию `openai/gpt-4o-mini`).
+- `--temperature` — температура выборки модели.
+- `--max-tokens` — максимальное число токенов в ответе (ограничения модели применяются).
+- `--system` — системный промпт (инструкции для ассистента).
+- `--message` — если указан, чат выполнит один запрос и завершится.
+
+OpenRouter:
+- Требуется переменная окружения `OPENROUTER_API_KEY` (поддерживается запасной `OPENAI_API_KEY`).
+- Базовый URL: `https://openrouter.ai/api/v1`.
+- Рекомендуемые заголовки `HTTP-Referer` и `X-Title` настраиваются через `OPENROUTER_SITE_URL` и `OPENROUTER_APP_NAME`.
+
+Streaming:
+- Чат использует LangGraph и события `astream_events`, печатая входящие токены по мере генерации.
 
 ### Полезные флаги
 - `--out` — куда сохранить тесты (по умолчанию: `tests/test_<имя файла>.py`).
@@ -88,6 +124,7 @@ python agent.py -f src/utils.py
 
 - `/langchain-ai/langchain` — базовые концепции и примеры
 - `langchain-openai` — интеграция с OpenAI через LangChain
+- `/langchain-ai/langgraph` — документация и примеры по LangGraph (построение графов состояний, потоковые события)
 
 ## Лицензия
 MIT (если требуется, поменяйте под вашу политику).
