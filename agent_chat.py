@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
+from langgraph.constants import START
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END, MessagesState
@@ -56,7 +57,7 @@ def build_graph(llm: ChatOpenAI):
         return {"messages": [response]}
 
     graph.add_node("model", call_model)
-    graph.add_edge("start", "model")
+    graph.add_edge(START, "model")
     graph.add_edge("model", END)
 
     return graph.compile()
