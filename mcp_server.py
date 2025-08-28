@@ -45,6 +45,4 @@ async def generate_image(
 
 # Запуск сервера (добавьте это для самостоятельного запуска, если нужно)
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(mcp.run(transport="streamable-httpt"))
+    mcp.run()

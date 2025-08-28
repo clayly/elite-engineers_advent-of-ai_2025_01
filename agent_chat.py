@@ -85,31 +85,55 @@ def _load_mcp_servers_config(config_path: Path) -> List[Dict[str, Any]]:
 
 def _init_mcp_tools() -> List[Any]:
     """Initialize MultiServerMCPClient from mcp_servers.json and return tools list.
+    Also prints the list of all MCP servers and their tools at start.
     Returns empty list on any failure or if package isn't installed.
     """
-    if MultiServerMCPClient is None:
-        return []
     # Look for mcp_servers.json next to this script (project root)
     config_path = Path(__file__).resolve().parent / "mcp_servers.json"
+
+    # Load servers from config and print them
     servers = _load_mcp_servers_config(config_path)
     if not servers:
+        print("[MCP] No servers configured (mcp_servers.json not found or empty).")
         return []
+
+    print("[MCP] Loaded servers (from mcp_servers.json):")
+    for idx, srv in enumerate(servers, start=1):
+        name = srv.get("name") or "<unnamed>"
+        command = srv.get("command") or "<command?>"
+        transport = srv.get("transport") or "<transport?>"
+        print(f"  {idx}. {name} | command: {command} | transport: {transport}")
+
+    # Initialize client if available
     try:
         client = MultiServerMCPClient(servers=servers)
-    except Exception:
+    except Exception as e:
+        print(f"[MCP] Failed to initialize MultiServerMCPClient: {e}")
         return []
-    # Try to retrieve tools via get_tools or attribute
+
+    # Retrieve tools via get_tools or attribute and print summary
     try:
         get_tools = getattr(client, "get_tools", None)
         if callable(get_tools):
             tools = get_tools()
         else:
             tools = getattr(client, "tools", [])
-        # Ensure it's a list
         if not isinstance(tools, list):
+            print("[MCP] Unexpected tools container type; expected list.")
             return []
+
+        if tools:
+            print("[MCP] Available tools across all servers:")
+            for i, tool in enumerate(tools, start=1):
+                # Support both LangChain tool schemas and plain dicts
+                t_name = getattr(tool, "name", None) or (tool.get("name") if isinstance(tool, dict) else None) or f"tool_{i}"
+                t_desc = getattr(tool, "description", None) or (tool.get("description") if isinstance(tool, dict) else None) or ""
+                print(f"  - {t_name}: {t_desc}")
+        else:
+            print("[MCP] No tools exposed by configured servers.")
         return tools
-    except Exception:
+    except Exception as e:
+        print(f"[MCP] Error while retrieving tools: {e}")
         return []
 
 
