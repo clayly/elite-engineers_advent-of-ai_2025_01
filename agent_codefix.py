@@ -420,6 +420,10 @@ def _parse_unified_diff(diff_text: str):
                 "lines": [],
             }
             continue
+        if current is not None and line == "\\ No newline at end of file":
+            # Record a marker indicating the previous line (addition/deletion) had no trailing newline
+            current["lines"].append(("\\", ""))
+            continue
         if current is not None and (line.startswith(" ") or line.startswith("-") or line.startswith("+")):
             current["lines"].append((line[0], line[1:]))
             continue
@@ -453,6 +457,7 @@ def apply_unified_diff_to_text(original_text: str, diff_text: str) -> Tuple[bool
         out_lines.extend(orig_lines[cur:start])
         cur = start
         # Apply hunk body
+        last_op = None
         for kind, text in h["lines"]:
             if kind == " ":
                 if cur >= len(orig_lines):
@@ -461,6 +466,7 @@ def apply_unified_diff_to_text(original_text: str, diff_text: str) -> Tuple[bool
                     return False, None, f"Context mismatch at line {cur+1}."
                 out_lines.append(orig_lines[cur])
                 cur += 1
+                last_op = " "
             elif kind == "-":
                 if cur >= len(orig_lines):
                     return False, None, "Deletion exceeds original length."
@@ -468,14 +474,22 @@ def apply_unified_diff_to_text(original_text: str, diff_text: str) -> Tuple[bool
                     return False, None, f"Deletion mismatch at line {cur+1}."
                 # skip (delete) this line
                 cur += 1
+                last_op = "-"
             elif kind == "+":
-                # insert this line; choose EOL based on nearby lines
+                # insert this line; default to newline-terminated; may be adjusted by a following '\\ No newline at end of file' marker
                 eol = "\n"
-                if cur < len(orig_lines):
-                    eol = "\n" if orig_lines[cur].endswith("\n") else ""
-                elif out_lines:
-                    eol = "\n" if out_lines[-1].endswith("\n") else ""
                 out_lines.append(text + eol)
+                last_op = "+"
+            elif kind == "\\":
+                # Honor no-newline marker for the previous line (usually addition)
+                if last_op == "+" and out_lines:
+                    # remove trailing newline just added
+                    if out_lines[-1].endswith("\r\n"):
+                        out_lines[-1] = out_lines[-1][:-2]
+                    elif out_lines[-1].endswith("\n"):
+                        out_lines[-1] = out_lines[-1][:-1]
+                # no change to cur; marker doesn't consume original lines
+                last_op = "\\"
             else:
                 return False, None, "Unknown hunk line kind."
     # Append the rest of original file after last hunk
