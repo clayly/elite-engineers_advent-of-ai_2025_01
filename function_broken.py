@@ -1,2 +1,1 @@
-def get_number_three():
-    return 3
+def get_number_three():    return 3

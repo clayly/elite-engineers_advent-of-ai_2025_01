@@ -228,14 +228,15 @@ def _path_to_module_name(path: Path, pkg_root: Path) -> Optional[str]:
 # --------------------------- LLM Fix Suggestions ---------------------------
 
 SYSTEM_PROMPT = (
-    "You are a senior Python engineer AI agent that fixes syntax errors and import errors. "
-    "You will be given the file content and a list of issues. Return the corrected full file content. "
-    "Rules: produce ONLY the corrected code wrapped in a single ```python code block. No extra commentary." 
+    "You are a senior Python engineer AI agent that fixes syntax and import errors. "
+    "Return ONLY a unified diff/patch for the specified file, with minimal necessary changes. "
+    "Rules: Output a single fenced code block labeled 'diff' or 'patch' containing a standard unified diff. "
+    "Do not include any explanations or full file content outside the diff."
 )
 
 
 def extract_code_blocks(s: str) -> str:
-    """Extract python code from ```python blocks; if none, return the text as-is."""
+    """(Legacy) Extract python code from ```python blocks; if none, return the text as-is."""
     import re
     blocks: List[str] = []
     for m in re.finditer(r"```(?:python)?\n(.*?)```", s, flags=re.DOTALL | re.IGNORECASE):
@@ -243,6 +244,41 @@ def extract_code_blocks(s: str) -> str:
     if blocks:
         return "\n\n".join(blocks).strip()
     return s.strip()
+
+
+def extract_fenced_blocks(s: str) -> List[Tuple[str, str]]:
+    """Extract all fenced code blocks, returning list of (lang_lower, content).
+    If language is missing, lang_lower is an empty string.
+    """
+    import re
+    results: List[Tuple[str, str]] = []
+    for m in re.finditer(r"```([a-zA-Z0-9_-]*)\n(.*?)```", s, flags=re.DOTALL):
+        lang = (m.group(1) or "").strip().lower()
+        content = m.group(2)
+        results.append((lang, content.strip()))
+    return results
+
+
+def extract_unified_diff(s: str) -> Optional[str]:
+    """Try to extract a unified diff/patch from text.
+    Priority: a fenced block with lang in {diff, patch, udiff}, else any fenced block containing '---' and '+++', else the raw text if it looks like a diff.
+    Returns None if no diff found.
+    """
+    blocks = extract_fenced_blocks(s)
+    # 1) Prefer explicitly labeled diff/patch blocks
+    for lang, content in blocks:
+        if lang in {"diff", "patch", "udiff"}:
+            if "---" in content and "+++" in content:
+                return content.strip()
+    # 2) Any block that contains a unified diff header
+    for _, content in blocks:
+        if "---" in content and "+++" in content and "@@" in content:
+            return content.strip()
+    # 3) Fallback to full text if it looks like a diff
+    text = s.strip()
+    if text.startswith("diff ") or text.startswith("--- ") or "@@" in text:
+        return text
+    return None
 
 
 def _extract_token_usage(resp: Any) -> Tuple[int, int, int]:
@@ -310,17 +346,24 @@ async def propose_fix_for_file(llm: ChatOpenAI, analysis: FileAnalysis) -> Optio
         context_snippet = snippet
 
     user_prompt = f"""
-    File path: {analysis.path}
+    You must produce a unified diff/patch that fixes the issues in the target file.
+
+    Target file path: {analysis.path}
 
     Issues detected:
     {textwrap.indent('\n'.join(issues_desc), '  ')}
 
-    Provide a corrected, complete Python file that resolves all issues. Use minimal changes.
-    Return ONLY the corrected code in a single fenced code block.
+    Instructions:
+    - Output ONLY a single fenced code block labeled diff or patch.
+    - Use standard unified diff format with headers:
+      --- a/{analysis.path.name}
+      +++ b/{analysis.path.name}
+    - Include one or more @@ hunks with minimal necessary changes.
+    - Do NOT include the full file; only the diff.
 
-    Original (or relevant) content:
+    Original file content:
     ---
-    {context_snippet}
+    {analysis.source}
     ---
     """.strip()
 
@@ -340,11 +383,104 @@ async def propose_fix_for_file(llm: ChatOpenAI, analysis: FileAnalysis) -> Optio
     print(f"[TOKENS] file={analysis.path} | model={model_id} | input={in_tok} | output={out_tok} | total={total_tok}")
 
     content = getattr(resp, "content", "")
-    fixed = extract_code_blocks(content)
-    if not fixed.strip():
+    diff_text = extract_unified_diff(content)
+    if not diff_text or not diff_text.strip():
         return None
-    return fixed
+    return diff_text.strip()
 
+
+# --------------------------- Unified Diff Apply ---------------------------
+import re as _re
+
+def _parse_unified_diff(diff_text: str):
+    """Parse a unified diff text, returning (old_file, new_file, hunks).
+    Each hunk is a dict with keys: orig_start, orig_count, new_start, new_count, lines [(kind, text)].
+    """
+    old_file = None
+    new_file = None
+    hunks: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    for raw in diff_text.splitlines():
+        line = raw.rstrip("\n")
+        if line.startswith("--- "):
+            old_file = line[4:].strip()
+            continue
+        if line.startswith("+++ "):
+            new_file = line[4:].strip()
+            continue
+        m = _re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+        if m:
+            if current is not None:
+                hunks.append(current)
+            current = {
+                "orig_start": int(m.group(1)),
+                "orig_count": int(m.group(2) or "1"),
+                "new_start": int(m.group(3)),
+                "new_count": int(m.group(4) or "1"),
+                "lines": [],
+            }
+            continue
+        if current is not None and (line.startswith(" ") or line.startswith("-") or line.startswith("+")):
+            current["lines"].append((line[0], line[1:]))
+            continue
+        # ignore other lines (e.g., index, diff --git)
+    if current is not None:
+        hunks.append(current)
+    return old_file, new_file, hunks
+
+
+def apply_unified_diff_to_text(original_text: str, diff_text: str) -> Tuple[bool, Optional[str], str]:
+    """Apply a unified diff to the provided original_text.
+    Returns (ok, new_text_or_None, error_message).
+    This is a minimal, strict applier that validates context lines.
+    """
+    _, _, hunks = _parse_unified_diff(diff_text)
+    if not hunks:
+        return False, None, "No hunks found in patch."
+
+    orig_lines = original_text.splitlines(keepends=True)
+    out_lines: List[str] = []
+    cur = 0  # index in orig_lines
+
+    def _strip_eol(s: str) -> str:
+        return s[:-1] if s.endswith("\n") or s.endswith("\r") else s
+
+    for h in hunks:
+        start = max(0, h["orig_start"] - 1)
+        # Append unchanged section before hunk
+        if start > len(orig_lines):
+            return False, None, f"Hunk starts beyond end of file at line {start+1}."
+        out_lines.extend(orig_lines[cur:start])
+        cur = start
+        # Apply hunk body
+        for kind, text in h["lines"]:
+            if kind == " ":
+                if cur >= len(orig_lines):
+                    return False, None, "Context exceeds original length."
+                if _strip_eol(orig_lines[cur]) != text:
+                    return False, None, f"Context mismatch at line {cur+1}."
+                out_lines.append(orig_lines[cur])
+                cur += 1
+            elif kind == "-":
+                if cur >= len(orig_lines):
+                    return False, None, "Deletion exceeds original length."
+                if _strip_eol(orig_lines[cur]) != text:
+                    return False, None, f"Deletion mismatch at line {cur+1}."
+                # skip (delete) this line
+                cur += 1
+            elif kind == "+":
+                # insert this line; choose EOL based on nearby lines
+                eol = "\n"
+                if cur < len(orig_lines):
+                    eol = "\n" if orig_lines[cur].endswith("\n") else ""
+                elif out_lines:
+                    eol = "\n" if out_lines[-1].endswith("\n") else ""
+                out_lines.append(text + eol)
+            else:
+                return False, None, "Unknown hunk line kind."
+    # Append the rest of original file after last hunk
+    out_lines.extend(orig_lines[cur:])
+    return True, "".join(out_lines), ""
 
 # --------------------------- CLI and Orchestration ---------------------------
 
@@ -423,33 +559,36 @@ async def run(args: Args) -> int:
                 print("  [INFO] No fix proposed by LLM or call failed.")
             continue
 
-        # Show a diff-like preview (first 40 lines)
-        preview = "\n".join(proposed.splitlines()[:40])
-        print("\nProposed fix (first lines):\n" + preview)
+        # Show diff preview (first 80 lines)
+        preview = "\n".join(proposed.splitlines()[:80])
+        print("\nProposed patch (first lines):\n" + preview)
 
         should_apply = False
         if args.assume_yes:
-            # Auto-apply all proposed fixes without prompting
             should_apply = True
         else:
-            # Ask by default, regardless of --apply flag
             try:
-                ans = input("Apply this fix? [y/N]: ").strip().lower()
+                ans = input("Apply this patch? [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 ans = ""
             should_apply = ans in ("y", "yes")
 
         if should_apply:
+            # Apply unified diff to original content
+            ok, new_text, err = apply_unified_diff_to_text(analysis.source, proposed)
+            if not ok or new_text is None:
+                print(f"  [ERROR] Failed to apply patch: {err or 'unknown error'}")
+                continue
             # Backup and write
             bak = analysis.path.with_suffix(analysis.path.suffix + ".bak")
             try:
                 if not bak.exists():
                     bak.write_text(analysis.source, encoding="utf-8")
-                analysis.path.write_text(proposed, encoding="utf-8")
+                analysis.path.write_text(new_text, encoding="utf-8")
                 any_applied = True
-                print(f"  [OK] Applied fix. Backup saved at {bak}")
+                print(f"  [OK] Patch applied. Backup saved at {bak}")
             except Exception as e:
-                print(f"  [ERROR] Failed to write fix: {e}")
+                print(f"  [ERROR] Failed to write patched file: {e}")
         else:
             print("  [SKIP] Not applied.")
 
