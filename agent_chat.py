@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langgraph.constants import START
+import json
+from pathlib import Path
+
+# MCP client for multiple servers
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END, MessagesState
@@ -61,6 +66,51 @@ def build_graph(llm: ChatOpenAI):
     graph.add_edge("model", END)
 
     return graph.compile()
+
+
+# ============ MCP Integration (optional) ============
+
+def _load_mcp_servers_config(config_path: Path) -> List[Dict[str, Any]]:
+    try:
+        if not config_path.exists():
+            return []
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            # ensure elements are dicts
+            return [s for s in data if isinstance(s, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _init_mcp_tools() -> List[Any]:
+    """Initialize MultiServerMCPClient from mcp_servers.json and return tools list.
+    Returns empty list on any failure or if package isn't installed.
+    """
+    if MultiServerMCPClient is None:
+        return []
+    # Look for mcp_servers.json next to this script (project root)
+    config_path = Path(__file__).resolve().parent / "mcp_servers.json"
+    servers = _load_mcp_servers_config(config_path)
+    if not servers:
+        return []
+    try:
+        client = MultiServerMCPClient(servers=servers)
+    except Exception:
+        return []
+    # Try to retrieve tools via get_tools or attribute
+    try:
+        get_tools = getattr(client, "get_tools", None)
+        if callable(get_tools):
+            tools = get_tools()
+        else:
+            tools = getattr(client, "tools", [])
+        # Ensure it's a list
+        if not isinstance(tools, list):
+            return []
+        return tools
+    except Exception:
+        return []
 
 
 async def stream_once(app, messages: List[BaseMessage]) -> str:
@@ -148,6 +198,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
 
     llm = init_llm(args.model, args.temperature, args.max_tokens)
+
+    # Initialize MCP tools from mcp_servers.json (if available) and bind to LLM
+    tools = _init_mcp_tools()
+    if tools:
+        try:
+            llm = llm.bind_tools(tools)
+        except Exception as e:
+            print(f"[WARN] Failed to bind MCP tools to LLM: {e}", file=sys.stderr)
+
     app = build_graph(llm)
 
     async def runner():
