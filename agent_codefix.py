@@ -245,6 +245,40 @@ def extract_code_blocks(s: str) -> str:
     return s.strip()
 
 
+def _extract_token_usage(resp: Any) -> Tuple[int, int, int]:
+    """Extract (input_tokens, output_tokens, total_tokens) from a LangChain AIMessage.
+
+    Priority:
+    1) resp.usage_metadata: standardized by LangChain
+       - keys: input_tokens, output_tokens, total_tokens
+    2) resp.response_metadata: provider-specific
+       - openai-compatible: token_usage or usage with prompt_tokens, completion_tokens, total_tokens
+    Returns zeros if not available.
+    """
+    try:
+        # 1) Standardized
+        usage = getattr(resp, "usage_metadata", None)
+        if isinstance(usage, dict):
+            it = int(usage.get("input_tokens") or 0)
+            ot = int(usage.get("output_tokens") or 0)
+            tt = int(usage.get("total_tokens") or (it + ot))
+            return it, ot, tt
+
+        # 2) Provider-specific fallbacks
+        meta = getattr(resp, "response_metadata", None)
+        if isinstance(meta, dict):
+            token_usage = meta.get("token_usage") or meta.get("usage")
+            if isinstance(token_usage, dict):
+                # OpenAI-style
+                it = int(token_usage.get("prompt_tokens") or 0)
+                ot = int(token_usage.get("completion_tokens") or 0)
+                tt = int(token_usage.get("total_tokens") or (it + ot))
+                return it, ot, tt
+    except Exception:
+        pass
+    return 0, 0, 0
+
+
 async def propose_fix_for_file(llm: ChatOpenAI, analysis: FileAnalysis) -> Optional[str]:
     issues_desc: List[str] = []
     if analysis.syntax_error:
@@ -296,6 +330,15 @@ async def propose_fix_for_file(llm: ChatOpenAI, analysis: FileAnalysis) -> Optio
     except Exception as e:
         print(f"[ERROR] LLM call failed for {analysis.path}: {e}", file=sys.stderr)
         return None
+
+    # Token accounting and console output
+    in_tok, out_tok, total_tok = _extract_token_usage(resp)
+    try:
+        model_id = getattr(llm, "model", None) or getattr(llm, "model_name", None) or "unknown-model"
+    except Exception:
+        model_id = "unknown-model"
+    print(f"[TOKENS] file={analysis.path} | model={model_id} | input={in_tok} | output={out_tok} | total={total_tok}")
+
     content = getattr(resp, "content", "")
     fixed = extract_code_blocks(content)
     if not fixed.strip():
