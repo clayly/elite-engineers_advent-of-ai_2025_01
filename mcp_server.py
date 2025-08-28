@@ -41,8 +41,3 @@ async def generate_image(
             error_msg = f"Internal error: {str(e)}"
             await ctx.error(error_msg)
             return {"success": False, "message": error_msg}
-
-
-# Запуск сервера (добавьте это для самостоятельного запуска, если нужно)
-if __name__ == "__main__":
-    mcp.run()
