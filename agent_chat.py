@@ -17,6 +17,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END, MessagesState
+from langgraph.prebuilt import ToolNode, tools_condition
 
 
 def init_llm(model: str, temperature: float, max_tokens: Optional[int]) -> ChatOpenAI:
@@ -52,8 +53,12 @@ def init_llm(model: str, temperature: float, max_tokens: Optional[int]) -> ChatO
     return ChatOpenAI(**kwargs)
 
 
-def build_graph(llm: ChatOpenAI):
-    """Build a minimal LangGraph that appends model responses to message history."""
+def build_graph(llm: ChatOpenAI, tools: Optional[List[Any]] = None):
+    """Build a LangGraph that supports tool execution if tools are provided.
+
+    - Without tools: single model call, then END (original behavior).
+    - With tools: route based on tools_condition to execute tools, then loop back to model.
+    """
     graph = StateGraph(MessagesState)
 
     async def call_model(state: MessagesState):
@@ -62,8 +67,23 @@ def build_graph(llm: ChatOpenAI):
         return {"messages": [response]}
 
     graph.add_node("model", call_model)
-    graph.add_edge(START, "model")
-    graph.add_edge("model", END)
+
+    if tools:
+        # Add a ToolNode and conditional routing so tools can be executed
+        graph.add_node("tools", ToolNode(tools))
+        # Route to tools when the model requested a tool; otherwise finish
+        graph.add_conditional_edges(
+            "model",
+            tools_condition,
+            {"tools": "tools", END: END},
+        )
+        # After tools run, go back to the model to include tool output in context
+        graph.add_edge("tools", "model")
+        graph.add_edge(START, "model")
+    else:
+        # Original simple flow
+        graph.add_edge(START, "model")
+        graph.add_edge("model", END)
 
     return graph.compile()
 
@@ -192,6 +212,21 @@ async def stream_once(app, messages: List[BaseMessage]) -> str:
             # End of streaming for this model call; print newline if anything was printed
             if full_text_parts:
                 print()
+        elif ev == "on_tool_start":
+            data = event.get("data", {})
+            name = data.get("name") or data.get("tool") or "<tool>"
+            input_data = data.get("input") or data.get("inputs") or {}
+            print(f"\n[MCP][Tool start] {name} inputs={input_data}")
+        elif ev == "on_tool_end":
+            data = event.get("data", {})
+            name = data.get("name") or data.get("tool") or "<tool>"
+            output = data.get("output") or data.get("result")
+            print(f"\n[MCP][Tool end] {name} output={output}")
+        elif ev == "on_tool_error":
+            data = event.get("data", {})
+            name = data.get("name") or data.get("tool") or "<tool>"
+            error = data.get("error") or data.get("traceback") or data
+            print(f"\n[MCP][Tool error] {name}: {error}", file=sys.stderr)
     return "".join(full_text_parts)
 
 
@@ -260,7 +295,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception as e:
             print(f"[WARN] Failed to bind MCP tools to LLM: {e}", file=sys.stderr)
 
-    app = build_graph(llm)
+    app = build_graph(llm, tools)
 
     async def runner():
         if args.message:
