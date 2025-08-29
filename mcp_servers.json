@@ -1,8 +1,12 @@
-[
-  {
-    "name": "local-mcp-server",
-    "command": "mcp",
-    "args": ["dev", "mcp_server.py"],
+{
+  "local-mcp-server": {
+    "command": "uv",
+    "args": [
+      "run",
+      "fastmcp",
+      "run",
+      "mcp_server.py"
+    ],
     "transport": "stdio"
   }
-]
+}

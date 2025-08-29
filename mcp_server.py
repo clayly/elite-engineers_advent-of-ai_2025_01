@@ -1,6 +1,5 @@
-from mcp.server.fastmcp import FastMCP, Context
-from mcp.server.session import ServerSession
 import httpx
+from fastmcp import FastMCP, Context
 
 # Создаем MCP-сервер
 mcp = FastMCP("MCP Image Generation Server")
@@ -10,10 +9,10 @@ mcp = FastMCP("MCP Image Generation Server")
 @mcp.tool()
 async def generate_image(
         prompt: str,
+        ctx: Context,
         style: str = "DEFAULT",
         width: int = 1024,
-        height: int = 768,
-        ctx: Context[ServerSession, None] = None
+        height: int = 768
 ) -> dict:
     """Generate an image based on the prompt by calling an external API."""
     await ctx.info(f"Starting image generation for prompt: {prompt} (style: {style}, size: {width}x{height})")
@@ -41,3 +40,6 @@ async def generate_image(
             error_msg = f"Internal error: {str(e)}"
             await ctx.error(error_msg)
             return {"success": False, "message": error_msg}
+
+if __name__ == "__main__":
+    mcp.run()  # Default: uses STDIO transport

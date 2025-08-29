@@ -70,17 +70,17 @@ def build_graph(llm: ChatOpenAI):
 
 # ============ MCP Integration (optional) ============
 
-def _load_mcp_servers_config(config_path: Path) -> List[Dict[str, Any]]:
+def _load_mcp_servers_config(config_path: Path) -> Dict[str, Any]:
     try:
         if not config_path.exists():
-            return []
+            return {}
         data = json.loads(config_path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
+        if isinstance(data, dict):
             # ensure elements are dicts
-            return [s for s in data if isinstance(s, dict)]
+            return data
     except Exception:
         pass
-    return []
+    return {}
 
 
 def _init_mcp_tools() -> List[Any]:
@@ -98,29 +98,58 @@ def _init_mcp_tools() -> List[Any]:
         return []
 
     print("[MCP] Loaded servers (from mcp_servers.json):")
-    for idx, srv in enumerate(servers, start=1):
-        name = srv.get("name") or "<unnamed>"
+    for idx, (name, srv) in enumerate(servers.items()):
         command = srv.get("command") or "<command?>"
         transport = srv.get("transport") or "<transport?>"
         print(f"  {idx}. {name} | command: {command} | transport: {transport}")
 
-    # Initialize client if available
+    # Initialize client and collect tools (get_tools is async)
     try:
-        client = MultiServerMCPClient(servers=servers)
+        client = MultiServerMCPClient(connections=servers)
     except Exception as e:
         print(f"[MCP] Failed to initialize MultiServerMCPClient: {e}")
         return []
 
-    # Retrieve tools via get_tools or attribute and print summary
+    # Retrieve tools via async get_tools and print summary
     try:
-        get_tools = getattr(client, "get_tools", None)
-        if callable(get_tools):
-            tools = get_tools()
-        else:
-            tools = getattr(client, "tools", [])
+        async def _fetch_tools():
+            return await client.get_tools()
+
+        try:
+            tools = asyncio.run(_fetch_tools())
+        except RuntimeError:
+            # Fallback for environments with a running loop (e.g., notebooks)
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        asyncio.set_event_loop(new_loop)
+                        tools = new_loop.run_until_complete(client.get_tools())
+                    finally:
+                        asyncio.set_event_loop(loop)
+                        new_loop.close()
+                else:
+                    tools = loop.run_until_complete(client.get_tools())
+            except Exception as inner_e:
+                print(f"[MCP] Error while awaiting tools (event loop): {inner_e}")
+                return []
+
         if not isinstance(tools, list):
-            print("[MCP] Unexpected tools container type; expected list.")
-            return []
+            # The adapter promises a list[BaseTool]; guard just in case
+            try:
+                # Attempt to coerce common container types
+                if isinstance(tools, dict):
+                    flat: List[Any] = []
+                    for v in tools.values():
+                        if isinstance(v, list):
+                            flat.extend(v)
+                    tools = flat
+                else:
+                    tools = list(tools)  # type: ignore[assignment]
+            except Exception:
+                print("[MCP] Unexpected tools container type; expected list.")
+                return []
 
         if tools:
             print("[MCP] Available tools across all servers:")
