@@ -12,4 +12,5 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.0",
     "mcp[cli]>=1.13.1",
     "httpx>=0.28.1",
+    "langchain-ollama>=0.1.0",
 ]

@@ -227,3 +227,52 @@ python agent_codefix.py --path . --model openai/gpt-4o-mini `--temperature 0.0 -
 - Реализация асинхронная: взаимодействие с моделью выполняется через `ainvoke`.
 - Контекст7: в процессе разработки ориентировались на документацию LangChain и OpenRouter, доступную через платформу Context7 (см. ID `/langchain-ai/langchain`, `langchain-openai`, `/langchain-ai/langgraph`).
 - При большом проекте анализ AST и проверка импортов могут занять время — агент выполняет файловый анализ в thread‑pool.
+
+
+## Local Ollama Chat Agent (uv + MCP + Context7)
+
+This repository includes a local Ollama-powered chat agent: `agent_chat_ollama.py`.
+It uses LangGraph for orchestration and streams tokens as they generate. Dependencies are managed with uv.
+
+Prerequisites:
+- Install Ollama and ensure the daemon is running (default: http://localhost:11434)
+- Pull a local model (default is qwen2.5-coder:1.5b):
+  - `ollama pull qwen2.5-coder:1.5b`
+
+Install deps (uv):
+- `uv sync`
+
+Run examples (uv):
+- Interactive chat:
+  - `uv run python agent_chat_ollama.py --system "You are a helpful assistant."`
+- Single-turn:
+  - `uv run python agent_chat_ollama.py --message "Hello!"`
+
+Flags and env:
+- `--model` (default: from $OLLAMA_MODEL or `qwen2.5-coder:1.5b`)
+- `--ollama-base-url` (default: from $OLLAMA_BASE_URL or `http://localhost:11434`)
+- `--temperature` (default: 0.2)
+- `--max-tokens` maps to Ollama `num_predict`
+
+Using MCP tools (including Context7):
+- The chat agent will automatically load tools defined in `mcp_servers.json` using MultiServerMCPClient.
+- To use Context7 for documentation lookup, register your Context7 MCP server in `mcp_servers.json`.
+  Example skeleton (replace command/args with your actual Context7 MCP server invocation):
+```
+{
+  "context7-docs": {
+    "command": "/path/to/context7-mcp-binary-or-launcher",
+    "args": [
+      "--some-flag-if-needed"
+    ],
+    "transport": "stdio"
+  }
+}
+```
+- Once configured, available MCP tools will be printed at startup. The agent can automatically call these tools when the model requests them.
+
+Notes:
+- You can override defaults via env:
+  - `OLLAMA_MODEL` (e.g., `qwen2.5-coder:1.5b`)
+  - `OLLAMA_BASE_URL` (e.g., `http://localhost:11434`)
+- If you change models, ensure they’re pulled first with `ollama pull <model>`.
