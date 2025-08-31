@@ -44,7 +44,7 @@ $env:OPENROUTER_APP_NAME = "AI Test Agent"
 2) Запустите агента, указав путь к файлу, для которого нужно сгенерировать тесты:
 
 ```
-python agent.py --file path\to\your_module.py
+python agent_run_tests.py --file path\to\your_module.py
 ```
 
 Агент:
@@ -114,7 +114,7 @@ Streaming:
 Пусть есть файл `src/utils.py`. Запуск:
 
 ```
-python agent.py -f src/utils.py
+python agent_run_tests.py -f src/utils.py
 ```
 
 Выходные тесты появятся в `tests/test_utils.py`, дальше агент сам запустит их в контейнере.
@@ -161,18 +161,18 @@ Git MCP сервер:
 
 1) Список инструментов без привязки к модели:
 ```
-python agent.py -f path/to/your.py --enable-mcp --mcp-git --mcp-list-tools --skip-run
+python agent_run_tests.py -f path/to/your.py --enable-mcp --mcp-git --mcp-list-tools --skip-run
 ```
 
 2) Привязать инструменты к модели при генерации:
 ```
 export MCP_GIT_REPO=/path/to/repo
-python agent.py -f path/to/your.py --enable-mcp --mcp-git --mcp-bind-tools
+python agent_run_tests.py -f path/to/your.py --enable-mcp --mcp-git --mcp-bind-tools
 ```
 
 3) Добавить дополнительные сервера (JSON):
 ```
-python agent.py -f path/to/your.py --enable-mcp \
+python agent_run_tests.py -f path/to/your.py --enable-mcp \
   --mcp-extra-servers '[{"name":"math","command":"python","args":["math_server.py"],"transport":"stdio"}]'
 ```
 
