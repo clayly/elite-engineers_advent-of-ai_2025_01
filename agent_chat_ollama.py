@@ -4,10 +4,18 @@ import argparse
 import asyncio
 import os
 import sys
+import sqlite3
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from langchain_ollama import ChatOllama
-from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage
+# Optional import; we'll guide the user if missing at runtime
+try:
+    from langchain_community.chat_message_histories.sql import SQLChatMessageHistory  # type: ignore
+except Exception:
+    SQLChatMessageHistory = None  # type: ignore
+
 from langgraph.constants import START
 import json
 from pathlib import Path
@@ -163,8 +171,10 @@ def _init_mcp_tools() -> List[Any]:
             print("[MCP] Available tools across all servers:")
             for i, tool in enumerate(tools, start=1):
                 # Support both LangChain tool schemas and plain dicts
-                t_name = getattr(tool, "name", None) or (tool.get("name") if isinstance(tool, dict) else None) or f"tool_{i}"
-                t_desc = getattr(tool, "description", None) or (tool.get("description") if isinstance(tool, dict) else None) or ""
+                t_name = getattr(tool, "name", None) or (
+                    tool.get("name") if isinstance(tool, dict) else None) or f"tool_{i}"
+                t_desc = getattr(tool, "description", None) or (
+                    tool.get("description") if isinstance(tool, dict) else None) or ""
                 print(f"  - {t_name}: {t_desc}")
         else:
             print("[MCP] No tools exposed by configured servers.")
@@ -172,6 +182,62 @@ def _init_mcp_tools() -> List[Any]:
     except Exception as e:
         print(f"[MCP] Error while retrieving tools: {e}")
         return []
+
+
+# ============ Chat history persistence (SQLite) ============
+
+def _default_db_path() -> Path:
+    return Path(__file__).resolve().parent / ".chat_history.sqlite"
+
+
+def _list_sessions(db_path: Path, table_name: str = "message_store") -> List[str]:
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT DISTINCT session_id FROM {table_name} ORDER BY session_id"
+            )
+            rows = cur.fetchall()
+            return [r[0] for r in rows if r and r[0]]
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        # Table likely doesn't exist yet
+        return []
+    except Exception:
+        return []
+
+
+def _choose_session_interactive(db_path: Path) -> str:
+    sessions = _list_sessions(db_path)
+    print("\nChat sessions in DB:")
+    if sessions:
+        for i, s in enumerate(sessions, start=1):
+            print(f"  {i}. {s}")
+    else:
+        print("  <no sessions yet>")
+    while True:
+        raw = input("Select session number or type a new session name: ").strip()
+        if raw.isdigit() and sessions:
+            idx = int(raw)
+            if 1 <= idx <= len(sessions):
+                return sessions[idx - 1]
+        if raw:
+            return raw
+        print("Please enter a valid number or non-empty name.")
+
+
+def _init_history(db_path: Path, session_id: str):
+    if SQLChatMessageHistory is None:
+        raise RuntimeError(
+            "langchain-community is required for SQLChatMessageHistory. "
+            "Install with: uv add langchain-community"
+        )
+    # Build SQLAlchemy SQLite connection string
+    db_abs = db_path.resolve()
+    conn_str = f"sqlite:///{db_abs.as_posix()}"
+    return SQLChatMessageHistory(session_id=session_id, connection_string=conn_str)
 
 
 async def stream_once(app, messages: List[BaseMessage]) -> str:
@@ -218,31 +284,52 @@ async def stream_once(app, messages: List[BaseMessage]) -> str:
     return "".join(full_text_parts)
 
 
-async def interactive_chat(app, system_prompt: str):
+async def interactive_chat(app, history_store: Optional[SQLChatMessageHistory], system_prompt: str):
     print("Interactive chat started. Press Ctrl+C to exit.")
-    history: List[BaseMessage] = [SystemMessage(system_prompt)] if system_prompt else []
+    # Ensure system prompt exists only for new sessions
+    if history_store is None:
+        # Fallback to ephemeral in-memory list
+        in_mem: List[BaseMessage] = [SystemMessage(system_prompt)] if system_prompt else []
+    else:
+        existing = history_store.messages
+        if not existing and system_prompt:
+            history_store.add_message(SystemMessage(system_prompt))
     try:
         while True:
             user_input = input("You: ").strip()
             if not user_input:
                 continue
-            history.append(HumanMessage(user_input))
             print("Assistant: ", end="", flush=True)
-            reply = await stream_once(app, history)
-            # Persist assistant message in history for multi-turn context
-            from langchain_core.messages import AIMessage
-            history.append(AIMessage(content=reply))
+            if history_store is None:
+                in_mem.append(HumanMessage(user_input))
+                reply = await stream_once(app, in_mem)
+                history_store  # no-op to satisfy type checker
+                # Persist assistant message in the in-memory history
+                in_mem.append(AIMessage(content=reply))
+            else:
+                history_store.add_user_message(user_input)
+                reply = await stream_once(app, history_store.messages)
+                history_store.add_ai_message(reply)
     except KeyboardInterrupt:
         print("\nExiting chat.")
 
 
-async def single_turn(app, system_prompt: str, message: str):
-    messages: List[BaseMessage] = []
-    if system_prompt:
-        messages.append(SystemMessage(system_prompt))
-    messages.append(HumanMessage(message))
+async def single_turn(app, history_store: Optional[SQLChatMessageHistory], system_prompt: str, message: str):
     print("Assistant: ", end="", flush=True)
-    await stream_once(app, messages)
+    if history_store is None:
+        # Ephemeral
+        messages: List[BaseMessage] = []
+        if system_prompt:
+            messages.append(SystemMessage(system_prompt))
+        messages.append(HumanMessage(message))
+        await stream_once(app, messages)
+    else:
+        # Ensure system prompt for new session
+        if not history_store.messages and system_prompt:
+            history_store.add_message(SystemMessage(system_prompt))
+        history_store.add_user_message(message)
+        reply = await stream_once(app, history_store.messages)
+        history_store.add_ai_message(reply)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -252,7 +339,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     default_model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:1.5b")
     default_base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     parser.add_argument("--model", default=default_model, help="Ollama model tag (e.g., llama3.1, qwen2.5:7b)")
-    parser.add_argument("--ollama-base-url", dest="ollama_base_url", default=default_base, help="Ollama base URL (default from $OLLAMA_BASE_URL or http://localhost:11434)")
+    parser.add_argument("--ollama-base-url", dest="ollama_base_url", default=default_base,
+                        help="Ollama base URL (default from $OLLAMA_BASE_URL or http://localhost:11434)")
     parser.add_argument("--temperature", type=float, default=0.2, help="LLM temperature")
     parser.add_argument(
         "--max-tokens",
@@ -270,6 +358,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="If provided, run a single-turn chat for this message instead of interactive REPL",
     )
+    # Persistence/session options
+    parser.add_argument("--db-path", default=str(_default_db_path()),
+                        help="Path to SQLite DB file for chat history (default: .chat_history.sqlite)")
+    parser.add_argument("--session", default=None, help="Session ID to continue")
+    parser.add_argument("--new-session", dest="new_session", default=None, help="Create/use a new session ID")
+    parser.add_argument("--list-sessions", action="store_true", help="List existing sessions in the DB and exit")
+    parser.add_argument("--no-persist", action="store_true", help="Disable persistence and use in-memory history only")
     return parser.parse_args(argv)
 
 
@@ -288,11 +383,37 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     app = build_graph(llm, tools)
 
+    # Persistence setup
+    db_path = Path(args.db_path)
+    if args.list_sessions:
+        sessions = _list_sessions(db_path)
+        if sessions:
+            print("Existing sessions:")
+            for s in sessions:
+                print(f" - {s}")
+        else:
+            print("No sessions found.")
+        return 0
+
+    history_store: Optional[SQLChatMessageHistory] = None
+    if not args.no_persist:
+        session_id = args.new_session or args.session
+        if not session_id:
+            if args.message:
+                session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                print(f"[Chat] Using new session: {session_id}")
+            else:
+                session_id = _choose_session_interactive(db_path)
+        history_store = _init_history(db_path, session_id)
+        print(f"[Chat] DB: {db_path} | Session: {session_id}")
+    else:
+        print("[Chat] Persistence disabled (in-memory only).")
+
     async def runner():
         if args.message:
-            await single_turn(app, args.system, args.message)
+            await single_turn(app, history_store, args.system, args.message)
         else:
-            await interactive_chat(app, args.system)
+            await interactive_chat(app, history_store, args.system)
 
     try:
         asyncio.run(runner())
