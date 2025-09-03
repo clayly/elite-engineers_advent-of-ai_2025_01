@@ -19,6 +19,61 @@ from langgraph.constants import START
 # LangGraph imports
 from langgraph.graph import StateGraph, END, MessagesState
 
+# ============ TTS (pyttsx3) utilities ============
+import atexit
+try:
+    import pyttsx3  # type: ignore
+except Exception as _e:
+    pyttsx3 = None  # fallback if not installed yet
+    print(f"[Voice] pyttsx3 not available: {_e}", file=sys.stderr)
+
+_TTS_ENGINE = None
+_TTS_LOCK = threading.Lock()
+
+def _get_tts_engine():
+    global _TTS_ENGINE
+    if _TTS_ENGINE is not None:
+        return _TTS_ENGINE
+    if pyttsx3 is None:
+        return None
+    try:
+        eng = pyttsx3.init()
+        # Attempt to set a reasonable rate; ignore if unsupported
+        try:
+            rate = eng.getProperty("rate")
+            if isinstance(rate, int):
+                eng.setProperty("rate", max(150, min(200, rate)))
+        except Exception:
+            pass
+        _TTS_ENGINE = eng
+
+        def _cleanup():
+            try:
+                if _TTS_ENGINE is not None:
+                    _TTS_ENGINE.stop()
+            except Exception:
+                pass
+        atexit.register(_cleanup)
+        return _TTS_ENGINE
+    except Exception as e:
+        print(f"[Voice] Failed to initialize TTS engine: {e}", file=sys.stderr)
+        return None
+
+def _tts_speak_blocking(text: str):
+    """Speak the given text using pyttsx3; blocks until finished. Thread-safe via lock."""
+    text = (text or "").strip()
+    if not text:
+        return
+    eng = _get_tts_engine()
+    if eng is None:
+        return
+    with _TTS_LOCK:
+        try:
+            eng.say(text)
+            eng.runAndWait()
+        except Exception as e:
+            print(f"[Voice] TTS speak error: {e}", file=sys.stderr)
+
 
 def init_llm(model: str, temperature: float, max_tokens: Optional[int]) -> ChatOpenAI:
     """Initialize ChatOpenAI client configured to use OpenRouter.
@@ -216,6 +271,11 @@ async def interactive_chat(app, system_prompt: str, whisper_model: str = "base",
             history.append(HumanMessage(text))
             print("Assistant: ", end="", flush=True)
             reply = await stream_once(app, history)
+            # Speak the reply via TTS
+            try:
+                await asyncio.to_thread(_tts_speak_blocking, reply)
+            except Exception as e:
+                print(f"[Voice] TTS error: {e}", file=sys.stderr)
             # Persist assistant message in history for multi-turn context
             from langchain_core.messages import AIMessage
             history.append(AIMessage(content=reply))
@@ -229,7 +289,11 @@ async def single_turn(app, system_prompt: str, message: str):
         messages.append(SystemMessage(system_prompt))
     messages.append(HumanMessage(message))
     print("Assistant: ", end="", flush=True)
-    await stream_once(app, messages)
+    reply = await stream_once(app, messages)
+    try:
+        await asyncio.to_thread(_tts_speak_blocking, reply)
+    except Exception as e:
+        print(f"[Voice] TTS error: {e}", file=sys.stderr)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
