@@ -5,13 +5,18 @@ description = "AI agent that generates tests for a specified Python file using L
 requires-python = ">=3.13"
 dependencies = [
     "fastmcp>=2.12.0",
-    "langchain>=0.2.16",
+    "langchain>=0.3.27",
     "langchain-community>=0.3.29",
     "langchain-openai>=0.3.32",
-    "langgraph>=0.2.36",
+    "langgraph>=0.6.6",
     "pytest>=8.2.0",
-    "langchain-mcp-adapters>=0.1.0",
+    "langchain-mcp-adapters>=0.1.9",
     "mcp[cli]>=1.13.1",
     "httpx>=0.28.1",
-    "langchain-ollama>=0.1.0",
+    "langchain-ollama>=0.3.7",
+    "openai-whisper>=20250625",
+    "sounddevice>=0.5.2",
+    "numpy>=2.2.6",
+    "numba>=0.61.2",
+    "llvmlite>=0.44.0"
 ]
