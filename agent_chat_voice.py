@@ -142,7 +142,7 @@ def _get_whisper_model(name: str):
         raise
 
 
-def transcribe_from_mic_until_enter(whisper_model: str = "base", sample_rate: int = 16000) -> str:
+def transcribe_from_mic_until_enter(whisper_model: str = "base", sample_rate: int = 16000, language: str = "ru", volume_threshold: float = 0.02) -> str:
     """Capture audio from microphone, show live Whisper transcription, stop on Enter and return final text.
 
     - Uses sounddevice to stream mic audio into a buffer.
@@ -177,8 +177,14 @@ def transcribe_from_mic_until_enter(whisper_model: str = "base", sample_rate: in
         except Exception:
             pass
         mono = np.asarray(mono, dtype=np.float32).copy()
-        with buf_lock:
-            chunks.append(mono)
+        # Volume gate: append only if RMS >= threshold
+        try:
+            rms = float(np.sqrt(np.mean(np.square(mono)))) if mono.size else 0.0
+        except Exception:
+            rms = 0.0
+        if rms >= float(volume_threshold):
+            with buf_lock:
+                chunks.append(mono)
 
     # Start mic stream
     try:
@@ -200,7 +206,7 @@ def transcribe_from_mic_until_enter(whisper_model: str = "base", sample_rate: in
                 audio = np.concatenate(chunks, axis=0)
             try:
                 # Whisper expects 16kHz mono float32; we record as such
-                result = model.transcribe(audio, fp16=False)
+                result = model.transcribe(audio, fp16=False, language=language, task="transcribe")
                 text = (result.get("text") or "").strip()
                 if text and text != last_printed:
                     # Update the same line
@@ -222,7 +228,7 @@ def transcribe_from_mic_until_enter(whisper_model: str = "base", sample_rate: in
     if audio.size == 0:
         return ""
     try:
-        result = model.transcribe(audio, fp16=False)
+        result = model.transcribe(audio, fp16=False, language=language, task="transcribe")
         final_text = (result.get("text") or "").strip()
         return final_text
     except Exception as e:
@@ -259,12 +265,17 @@ async def stream_once(app, messages: List[BaseMessage]) -> str:
     return "".join(full_text_parts)
 
 
-async def interactive_chat(app, system_prompt: str, whisper_model: str = "base", sample_rate: int = 16000):
+async def interactive_chat(app, system_prompt: str, whisper_model: str = "base", sample_rate: int = 16000, language: str = "ru", volume_threshold: float = 0.02):
     print("Interactive voice chat started. Speak and press Enter to send. Press Ctrl+C to exit.")
     history: List[BaseMessage] = [SystemMessage(system_prompt)] if system_prompt else []
     try:
         while True:
-            text = transcribe_from_mic_until_enter(whisper_model=whisper_model, sample_rate=sample_rate)
+            text = transcribe_from_mic_until_enter(
+                whisper_model=whisper_model,
+                sample_rate=sample_rate,
+                language=language,
+                volume_threshold=volume_threshold,
+            )
             text = (text or "").strip()
             if not text:
                 continue
@@ -329,6 +340,17 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=16000,
         help="Microphone sample rate (Hz), default 16000",
     )
+    parser.add_argument(
+        "--language",
+        default="ru",
+        help="Language code for Whisper transcription (e.g., ru). Default: ru",
+    )
+    parser.add_argument(
+        "--volume-threshold",
+        type=float,
+        default=0.02,
+        help="RMS threshold to accept mic frames (0..1). Higher = more strict. Default: 0.02",
+    )
     return parser.parse_args(argv)
 
 
@@ -343,7 +365,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.message:
             await single_turn(app, args.system, args.message)
         else:
-            await interactive_chat(app, args.system, whisper_model=args.whisper_model, sample_rate=args.sample_rate)
+            await interactive_chat(
+                app,
+                args.system,
+                whisper_model=args.whisper_model,
+                sample_rate=args.sample_rate,
+                language=args.language,
+                volume_threshold=args.volume_threshold,
+            )
 
     try:
         asyncio.run(runner())
