@@ -15,6 +15,26 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 
+def _decode_jwt_noverify(token: str) -> Dict[str, Any]:
+    """Decode a JWT payload without verifying signature.
+    Returns a dict payload. Raises ValueError on malformed token.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            raise ValueError("JWT must have at least two segments")
+        payload_b64 = parts[1]
+        # Pad base64url
+        pad = "=" * (-len(payload_b64) % 4)
+        import base64 as _b64
+        import json as _json
+
+        payload_bytes = _b64.urlsafe_b64decode(payload_b64 + pad)
+        return _json.loads(payload_bytes.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(f"Failed to decode JWT payload: {e}")
+
+
 # --------------------------- LLM Init (OpenRouter) ---------------------------
 
 def init_llm(model: str, temperature: float, max_tokens: Optional[int]) -> ChatOpenAI:
@@ -635,6 +655,54 @@ def parse_args(argv: Optional[List[str]] = None) -> Args:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+
+    # Enforce AGENT_TOKEN JWT policy at startup
+    token = os.environ.get("AGENT_TOKEN")
+    if not token:
+        print("[ERROR] AGENT_TOKEN is required but not set.", file=sys.stderr)
+        return 1
+    try:
+        payload = _decode_jwt_noverify(token)
+    except Exception as e:
+        print(f"[ERROR] Invalid AGENT_TOKEN: {e}", file=sys.stderr)
+        return 1
+
+    # Validate role contains 'codefix'
+    roles_field = payload.get("roles") if isinstance(payload, dict) else None
+    role_field = payload.get("role") if isinstance(payload, dict) else None
+
+    def _normalize_roles(val):
+        if val is None:
+            return []
+        if isinstance(val, str):
+            return [val]
+        if isinstance(val, (list, tuple)):
+            out = []
+            for v in val:
+                if isinstance(v, str):
+                    out.append(v)
+            return out
+        return []
+
+    roles = set(_normalize_roles(roles_field) + _normalize_roles(role_field))
+    if "codefix" not in {r.lower() for r in roles}:
+        print("[ERROR] AGENT_TOKEN does not grant required role 'codefix'.", file=sys.stderr)
+        return 1
+
+    # Extract and enforce max_tokens from JWT
+    if not isinstance(payload, dict) or "max_tokens" not in payload:
+        print("[ERROR] AGENT_TOKEN missing required 'max_tokens' claim.", file=sys.stderr)
+        return 1
+    try:
+        mt_val = int(payload.get("max_tokens"))
+        if mt_val <= 0:
+            raise ValueError("must be positive")
+    except Exception as e:
+        print(f"[ERROR] Invalid 'max_tokens' in AGENT_TOKEN: {e}", file=sys.stderr)
+        return 1
+
+    # Override CLI-provided max_tokens with token policy
+    args.max_tokens = mt_val
 
     async def runner():
         return await run(args)

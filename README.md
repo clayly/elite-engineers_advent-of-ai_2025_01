@@ -276,3 +276,17 @@ Notes:
   - `OLLAMA_MODEL` (e.g., `qwen2.5-coder:1.5b`)
   - `OLLAMA_BASE_URL` (e.g., `http://localhost:11434`)
 - If you change models, ensure they’re pulled first with `ollama pull <model>`.
+
+## JWT
+
+Example JWT with "codefix" role, max_tokens=10000:
+
+```
+eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTczNjI5MjEyNCwicm9sZXMiOlsiY29kZWZpeCJdLCJtYXhfdG9rZW5zIjoxMDAwMH0.
+```
+
+Example JWT with "viewer" role, max_tokens=0:
+
+```
+eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTczNjI5MjEyNCwicm9sZXMiOlsidmlld2VyIl0sIm1heF90b2tlbnMiOjB9.
+```
