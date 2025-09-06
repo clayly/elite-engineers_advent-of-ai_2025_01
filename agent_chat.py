@@ -271,7 +271,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--system",
-        default="You are a helpful AI assistant.",
+        default=Path("personalization.txt").read_text(encoding="utf-8"),
         help="System prompt/instructions",
     )
     parser.add_argument(
