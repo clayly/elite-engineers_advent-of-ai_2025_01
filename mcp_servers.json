@@ -8,5 +8,23 @@
       "mcp_server.py"
     ],
     "transport": "stdio"
+  },
+  "repomix": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "repomix@latest",
+      "--mcp"
+    ],
+    "transport": "stdio"
+  },
+  "filesystem": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "/home/clayly/projects/course/elite-engineers_advent-of-ai_2025_01"
+    ],
+    "transport": "stdio"
   }
 }
